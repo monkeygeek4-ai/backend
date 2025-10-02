@@ -1,10 +1,5 @@
 <?php
 // backend/api/messages/mark-read.php
-error_log("=== MARK READ CALLED ===");
-error_log("Input: " . file_get_contents('php://input'));
-error_log("ChatId: " . ($input['chatId'] ?? 'null'));
-error_log("User ID: " . $user['id']);
-
 
 require_once dirname(__DIR__, 2) . '/lib/Auth.php';
 require_once dirname(__DIR__, 2) . '/lib/Database.php';
@@ -14,10 +9,20 @@ require_once dirname(__DIR__, 2) . '/lib/WebSocketClient.php';
 $auth = new Auth();
 $user = $auth->requireAuth();
 
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    Response::error('Метод не разрешен', 405);
+}
+
 // Получаем данные из тела запроса
 $input = json_decode(file_get_contents('php://input'), true);
 $chatId = $input['chatId'] ?? null;
 $messageId = $input['messageId'] ?? null; // Опционально - для отметки конкретного сообщения
+
+// Логируем для отладки
+error_log("=== MARK READ CALLED ===");
+error_log("Input: " . json_encode($input));
+error_log("ChatId: " . ($chatId ?? 'null'));
+error_log("User ID: " . $user['id']);
 
 if (!$chatId) {
     Response::error('chatId обязателен', 400);
@@ -67,19 +72,25 @@ try {
     
     // Отправляем уведомление через WebSocket отправителю сообщения
     if ($lastMessage && $lastMessage['sender_id'] != $user['id']) {
-        $wsClient = new WebSocketClient();
-        $wsClient->send([
-            'type' => 'message_read',
-            'chatId' => $chatId,
-            'messageId' => $lastMessage['id'],
-            'readBy' => $user['id'],
-            'readByName' => $user['username'] ?? $user['email'],
-            'timestamp' => date('c')
-        ]);
+        try {
+            $wsClient = new WebSocketClient();
+            $wsClient->send([
+                'type' => 'message_read',
+                'chatId' => $chatId,
+                'messageId' => $lastMessage['id'],
+                'readBy' => $user['id'],
+                'readByName' => $user['username'] ?? $user['email'],
+                'timestamp' => date('c')
+            ]);
+        } catch (Exception $e) {
+            error_log("WebSocket notification error: " . $e->getMessage());
+            // Не прерываем выполнение, если WebSocket не работает
+        }
     }
     
     // Логируем действие
     error_log("User {$user['id']} marked messages as read in chat $chatId");
+    error_log("=== END MARK READ ===");
     
     Response::json([
         'success' => true,
@@ -89,5 +100,6 @@ try {
     
 } catch (Exception $e) {
     error_log("Mark as read error: " . $e->getMessage());
+    error_log("Stack trace: " . $e->getTraceAsString());
     Response::error('Ошибка обновления статуса прочтения', 500);
 }

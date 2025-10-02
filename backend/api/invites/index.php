@@ -1,8 +1,9 @@
 <?php
 // backend/api/invites/index.php
+// Получение списка инвайтов текущего пользователя
 
 require_once dirname(__DIR__, 2) . '/lib/Auth.php';
-require_once dirname(__DIR__, 2) . '/lib/InviteManager.php';
+require_once dirname(__DIR__, 2) . '/lib/SimpleInviteManager.php';
 require_once dirname(__DIR__, 2) . '/lib/Response.php';
 
 // Устанавливаем заголовки
@@ -17,10 +18,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// Только GET запросы
+if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+    Response::error('Метод не разрешен', 405);
+}
+
+// Требуем авторизацию
 $auth = new Auth();
 $user = $auth->requireAuth();
 
-$inviteManager = new InviteManager();
+// Получаем список инвайтов пользователя
+$inviteManager = new SimpleInviteManager();
 $result = $inviteManager->getUserInvites($user['id']);
+
+// Логируем
+if ($result['success']) {
+    $count = count($result['invites']);
+    error_log("User {$user['id']} has $count invites");
+}
 
 Response::json($result);

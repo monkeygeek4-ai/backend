@@ -1,8 +1,9 @@
 <?php
 // backend/api/invites/create.php
+// Создание нового инвайта-ссылки
 
 require_once dirname(__DIR__, 2) . '/lib/Auth.php';
-require_once dirname(__DIR__, 2) . '/lib/InviteManager.php';
+require_once dirname(__DIR__, 2) . '/lib/SimpleInviteManager.php';
 require_once dirname(__DIR__, 2) . '/lib/Response.php';
 
 // Устанавливаем заголовки
@@ -17,24 +18,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-$auth = new Auth();
-$user = $auth->requireAuth();
-
+// Только POST запросы
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     Response::error('Метод не разрешен', 405);
 }
 
-$data = json_decode(file_get_contents('php://input'), true);
-$phone = $data['phone'] ?? null;
+// Требуем авторизацию
+$auth = new Auth();
+$user = $auth->requireAuth();
 
-$inviteManager = new InviteManager();
+// Создаем инвайт
+$inviteManager = new SimpleInviteManager();
+$result = $inviteManager->createInvite($user['id']);
 
-if ($phone) {
-    // Отправляем инвайт по SMS
-    $result = $inviteManager->sendInvite($user['id'], $phone);
-} else {
-    // Просто создаем инвайт-код
-    $result = $inviteManager->createInvite($user['id']);
+// Логируем
+if ($result['success']) {
+    error_log("User {$user['id']} created invite: {$result['code']}");
 }
 
 Response::json($result);
