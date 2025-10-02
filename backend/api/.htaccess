@@ -1,36 +1,41 @@
-# backend/api/.htaccess
+<IfModule mod_rewrite.c>
 
-RewriteEngine On
+	# backend/api/.htaccess
 
-# Включаем CORS для всех запросов
-Header always set Access-Control-Allow-Origin "*"
-Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
-Header always set Access-Control-Max-Age "3600"
+	RewriteEngine On
 
-# Обработка preflight запросов
-RewriteCond %{REQUEST_METHOD} OPTIONS
-RewriteRule ^(.*)$ $1 [R=200,L]
+	# Включаем CORS для всех запросов
+	Header always set Access-Control-Allow-Origin "*"
+	Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+	Header always set Access-Control-Allow-Headers "Content-Type, Authorization, X-Requested-With"
+	Header always set Access-Control-Max-Age "3600"
 
-# Auth endpoints
-RewriteRule ^auth/login$ auth/login.php [L]
-RewriteRule ^auth/register$ auth/register.php [L]
-RewriteRule ^auth/logout$ auth/logout.php [L]
-RewriteRule ^auth/validate$ auth/validate.php [L]
+	# Обработка preflight запросов
+	RewriteCond %{REQUEST_METHOD} OPTIONS
+	RewriteRule ^(.*)$ $1 [R=200,L]
 
-# User endpoints
-RewriteRule ^users/me$ users/me.php [L]
-RewriteRule ^users/search$ users/search.php [L]
-RewriteRule ^users/([0-9a-zA-Z_-]+)$ users/profile.php?id=$1 [L]
+	# Auth endpoints
+	RewriteRule ^auth/login$ auth/login.php [L]
+	RewriteRule ^auth/register$ auth/register.php [L]
+	RewriteRule ^auth/logout$ auth/logout.php [L]
+	RewriteRule ^auth/validate$ auth/validate.php [L]
+	RewriteRule ^auth/me$ auth/me.php [L]
 
-# Chat endpoints
-RewriteRule ^chats$ chats/index.php [L]
-RewriteRule ^chats/([0-9a-zA-Z_-]+)$ chats/show.php?id=$1 [L]
-RewriteRule ^chats/([0-9a-zA-Z_-]+)/messages$ chats/messages.php?chat_id=$1 [L]
+	# User endpoints
+	RewriteRule ^users/me$ users/me.php [L]
+	RewriteRule ^users/search$ users/search.php [L]
+	RewriteRule ^users/([0-9a-zA-Z_-]+)$ users/profile.php?id=$1 [L]
 
-# Call endpoints
-RewriteRule ^calls/initiate$ calls/initiate.php [L]
-RewriteRule ^calls/([0-9a-zA-Z_-]+)/signal$ calls/signal.php?call_id=$1 [L]
+	# Chat endpoints
+	RewriteRule ^chats$ chats/index.php [L]
+	RewriteRule ^chats/([0-9a-zA-Z_-]+)$ chats/show.php?id=$1 [L]
+	RewriteRule ^chats/([0-9a-zA-Z_-]+)/messages$ chats/messages.php?chat_id=$1 [L]
 
-# Если ничего не совпало, возвращаем 404
-RewriteRule ^(.*)$ - [R=404,L]  
+	# Call endpoints
+	RewriteRule ^calls/initiate$ calls/initiate.php [L]
+	RewriteRule ^calls/([0-9a-zA-Z_-]+)/signal$ calls/signal.php?call_id=$1 [L]
+
+	# Если ничего не совпало, возвращаем 404
+	RewriteRule ^(.*)$ - [R=404,L]  
+	
+</IfModule>	
