@@ -14,28 +14,19 @@ class InviteManager {
     }
     
     /**
-     * Создать инвайт-код
+     * Создать инвайт
      */
-    public function createInvite($userId, $phone = null, $expiresInDays = 7) {
+    public function createInvite($userId, $phone = null) {
         try {
-            // Генерируем уникальный код
-            do {
-                $code = $this->generateInviteCode();
-                $existing = $this->db->fetchOne(
-                    "SELECT id FROM invites WHERE code = :code",
-                    ['code' => $code]
-                );
-            } while ($existing);
+            $code = $this->generateInviteCode();
+            $expiresAt = date('Y-m-d H:i:s', strtotime('+7 days'));
             
-            $expiresAt = date('Y-m-d H:i:s', strtotime("+$expiresInDays days"));
-            
-            $inviteId = $this->db->insert(
+            $this->db->insert(
                 "INSERT INTO invites (code, created_by, phone, expires_at, created_at) 
-                 VALUES (:code, :user_id, :phone, :expires_at, NOW())
-                 RETURNING id",
+                 VALUES (:code, :created_by, :phone, :expires_at, NOW())",
                 [
                     'code' => $code,
-                    'user_id' => $userId,
+                    'created_by' => $userId,
                     'phone' => $phone,
                     'expires_at' => $expiresAt
                 ]
@@ -43,9 +34,8 @@ class InviteManager {
             
             return [
                 'success' => true,
-                'inviteId' => $inviteId,
                 'code' => $code,
-                'expiresAt' => $expiresAt
+                'expires_at' => $expiresAt
             ];
             
         } catch (Exception $e) {
@@ -62,35 +52,22 @@ class InviteManager {
      */
     public function sendInvite($userId, $phone) {
         try {
-            // Получаем данные пользователя
-            $user = $this->db->fetchOne(
-                "SELECT username, full_name FROM users WHERE id = :id",
-                ['id' => $userId]
-            );
+            $inviteResult = $this->createInvite($userId, $phone);
             
-            if (!$user) {
-                return [
-                    'success' => false,
-                    'error' => 'Пользователь не найден'
-                ];
+            if (!$inviteResult['success']) {
+                return $inviteResult;
             }
             
-            // Создаем инвайт
-            $invite = $this->createInvite($userId, $phone);
+            $code = $inviteResult['code'];
             
-            if (!$invite['success']) {
-                return $invite;
-            }
-            
-            // Отправляем SMS
-            $inviterName = $user['full_name'] ?? $user['username'];
-            $smsResult = $this->sms->sendInvite($phone, $invite['code'], $inviterName);
+            // Отправляем SMS через Call Password
+            $smsResult = $this->sms->sendVerificationCode($phone, $code);
             
             if ($smsResult['success']) {
                 return [
                     'success' => true,
-                    'inviteCode' => $invite['code'],
-                    'message' => 'Инвайт отправлен на номер ' . $phone
+                    'code' => $code,
+                    'message' => 'Инвайт отправлен'
                 ];
             } else {
                 return [
@@ -109,23 +86,43 @@ class InviteManager {
     }
     
     /**
-     * Проверить валидность инвайт-кода
+     * Валидировать инвайт-код
      */
     public function validateInvite($code) {
         try {
-            $invite = $this->db->fetchOne(
-                "SELECT * FROM invites 
-                 WHERE code = :code 
-                 AND is_used = false 
-                 AND (expires_at IS NULL OR expires_at > NOW())",
+            // Сначала удаляем все истекшие инвайты
+            $this->deleteExpiredInvites();
+            
+            $invite = $this->db->fetch(
+                "SELECT * FROM invites WHERE code = :code",
                 ['code' => $code]
             );
             
             if (!$invite) {
                 return [
                     'valid' => false,
-                    'error' => 'Инвайт недействителен или истек'
+                    'error' => 'Неверный инвайт-код'
                 ];
+            }
+            
+            if ($invite['is_used']) {
+                return [
+                    'valid' => false,
+                    'error' => 'Инвайт уже использован'
+                ];
+            }
+            
+            // Проверяем срок действия
+            if (isset($invite['expires_at']) && $invite['expires_at']) {
+                $expiryDate = new DateTime($invite['expires_at']);
+                $now = new DateTime();
+                
+                if ($now > $expiryDate) {
+                    return [
+                        'valid' => false,
+                        'error' => 'Срок действия инвайта истек'
+                    ];
+                }
             }
             
             return [
@@ -137,7 +134,7 @@ class InviteManager {
             error_log("Validate invite error: " . $e->getMessage());
             return [
                 'valid' => false,
-                'error' => 'Ошибка проверки инвайта'
+                'error' => 'Ошибка проверки кода'
             ];
         }
     }
@@ -145,25 +142,60 @@ class InviteManager {
     /**
      * Отметить инвайт как использованный
      */
-    public function markInviteAsUsed($code, $usedByUserId) {
+    public function markInviteAsUsed($code, $userId) {
         try {
             $this->db->execute(
                 "UPDATE invites 
-                 SET is_used = true, used_by = :used_by, used_at = NOW() 
+                 SET is_used = true, used_by = :user_id, used_at = NOW() 
                  WHERE code = :code",
                 [
                     'code' => $code,
-                    'used_by' => $usedByUserId
+                    'user_id' => $userId
                 ]
             );
             
-            return ['success' => true];
+            return [
+                'success' => true
+            ];
             
         } catch (Exception $e) {
             error_log("Mark invite as used error: " . $e->getMessage());
             return [
                 'success' => false,
                 'error' => 'Ошибка обновления инвайта'
+            ];
+        }
+    }
+    
+    /**
+     * Получить список инвайтов пользователя
+     */
+    public function getUserInvites($userId) {
+        try {
+            // Удаляем истекшие инвайты перед показом списка
+            $this->deleteExpiredInvites();
+            
+            $invites = $this->db->fetchAll(
+                "SELECT 
+                    i.*,
+                    u.username as used_by_username
+                 FROM invites i
+                 LEFT JOIN users u ON u.id = i.used_by
+                 WHERE i.created_by = :user_id
+                 ORDER BY i.created_at DESC",
+                ['user_id' => $userId]
+            );
+            
+            return [
+                'success' => true,
+                'invites' => $invites
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Get user invites error: " . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Ошибка получения инвайтов'
             ];
         }
     }
@@ -219,17 +251,17 @@ class InviteManager {
     }
     
     /**
-     * Проверить SMS код верификации
+     * Проверить SMS код
      */
     public function verifyCode($phone, $code) {
         try {
-            $verification = $this->db->fetchOne(
+            $verification = $this->db->fetch(
                 "SELECT * FROM sms_verifications 
                  WHERE phone = :phone 
                  AND code = :code 
-                 AND is_verified = false 
+                 AND is_verified = false
                  AND expires_at > NOW()
-                 ORDER BY created_at DESC
+                 ORDER BY created_at DESC 
                  LIMIT 1",
                 [
                     'phone' => $phone,
@@ -238,31 +270,23 @@ class InviteManager {
             );
             
             if (!$verification) {
-                // Увеличиваем счетчик попыток
-                $this->db->execute(
-                    "UPDATE sms_verifications 
-                     SET attempts = attempts + 1 
-                     WHERE phone = :phone AND is_verified = false",
-                    ['phone' => $phone]
-                );
-                
                 return [
                     'success' => false,
                     'error' => 'Неверный или истекший код'
                 ];
             }
             
-            // Отмечаем как подтвержденный
+            // Отмечаем как проверенный
             $this->db->execute(
                 "UPDATE sms_verifications 
-                 SET is_verified = true, verified_at = NOW() 
+                 SET is_verified = true 
                  WHERE id = :id",
                 ['id' => $verification['id']]
             );
             
             return [
                 'success' => true,
-                'inviteCode' => $verification['invite_code']
+                'invite_code' => $verification['invite_code']
             ];
             
         } catch (Exception $e) {
@@ -275,32 +299,17 @@ class InviteManager {
     }
     
     /**
-     * Получить список инвайтов пользователя
+     * Удалить истекшие инвайты (автоматически)
      */
-    public function getUserInvites($userId) {
+    private function deleteExpiredInvites() {
         try {
-            $invites = $this->db->fetchAll(
-                "SELECT 
-                    i.*,
-                    u.username as used_by_username
-                 FROM invites i
-                 LEFT JOIN users u ON u.id = i.used_by
-                 WHERE i.created_by = :user_id
-                 ORDER BY i.created_at DESC",
-                ['user_id' => $userId]
+            $this->db->execute(
+                "DELETE FROM invites 
+                 WHERE expires_at < NOW() 
+                 AND is_used = false"
             );
-            
-            return [
-                'success' => true,
-                'invites' => $invites
-            ];
-            
         } catch (Exception $e) {
-            error_log("Get user invites error: " . $e->getMessage());
-            return [
-                'success' => false,
-                'error' => 'Ошибка получения инвайтов'
-            ];
+            error_log("Delete expired invites error: " . $e->getMessage());
         }
     }
     

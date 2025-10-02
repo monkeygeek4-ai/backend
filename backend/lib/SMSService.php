@@ -12,19 +12,10 @@ class SMSService {
     /**
      * Отправить код верификации через звонок
      */
-    public function sendVerificationCode($phone, $code) {
+    public function sendVerificationCode($phone, $code = null) {
         // Call Password автоматически генерирует код из последних 4 цифр номера
-        // Поэтому мы просто инициируем звонок
+        // Параметр $code игнорируется, но оставлен для совместимости
         return $this->sendCallPassword($phone);
-    }
-    
-    /**
-     * Отправить инвайт через звонок
-     * Для инвайтов лучше использовать SMS, поэтому используем резервный IQSMS
-     */
-    public function sendInvite($phone, $inviteCode, $inviterName) {
-        // Используем резервный IQSMS для текстовых инвайтов
-        return $this->sendSMSFallback($phone, "$inviterName приглашает вас в SecureWave! Код: $inviteCode");
     }
     
     /**
@@ -124,62 +115,6 @@ class SMSService {
     }
     
     /**
-     * Резервный метод отправки SMS через IQSMS (для инвайтов)
-     */
-    private function sendSMSFallback($phone, $text) {
-        $login = $_ENV['IQSMS_LOGIN'] ?? 'f1759379586300';
-        $password = $_ENV['IQSMS_PASSWORD'] ?? '766655';
-        $apiUrl = 'https://api.iqsms.ru/messages/v2';
-        
-        $phone = $this->formatPhone($phone);
-        if (!$phone) {
-            return ['success' => false, 'error' => 'Неверный формат номера'];
-        }
-        
-        $phone = '+' . $phone;
-        
-        try {
-            $url = $apiUrl . '/send/?' . http_build_query([
-                'phone' => $phone,
-                'text' => $text,
-            ]);
-            
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_HTTPAUTH => CURLAUTH_BASIC,
-                CURLOPT_USERPWD => $login . ':' . $password,
-                CURLOPT_TIMEOUT => 30
-            ]);
-            
-            $response = curl_exec($ch);
-            curl_close($ch);
-            
-            $response = trim($response);
-            
-            if (stripos($response, 'accepted') === 0) {
-                $parts = explode(';', $response);
-                return [
-                    'success' => true,
-                    'smscId' => $parts[1] ?? null,
-                    'message' => 'SMS отправлено'
-                ];
-            }
-            
-            return [
-                'success' => false,
-                'error' => 'Ошибка SMS: ' . $response
-            ];
-            
-        } catch (Exception $e) {
-            return [
-                'success' => false,
-                'error' => 'Ошибка: ' . $e->getMessage()
-            ];
-        }
-    }
-    
-    /**
      * Форматирование номера телефона
      * Возвращает: 79991234567
      */
@@ -202,20 +137,20 @@ class SMSService {
     }
     
     /**
-     * Генерация кода из последних 4 цифр номера
-     * Call Password использует именно этот принцип
+     * Генерация кода для отображения пользователю
+     * Call Password использует последние 4 цифры номера телефона
      */
     public static function generateCode() {
-        // Для Call Password код - это последние 4 цифры номера телефона
-        // Здесь генерируем 6-значный для совместимости с SMS
+        // Для совместимости с существующим кодом генерируем 6-значный код
+        // В реальности Call Password сам определит код из номера
         return str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     }
     
     /**
-     * Проверка статуса (если нужно)
+     * Проверка статуса звонка (опционально)
      */
     public function checkStatus($id) {
-        // Для Call Password статус можно получить через отдельный endpoint
+        // Можно реализовать проверку статуса через API SMSProfi
         // Пока возвращаем заглушку
         return ['status' => 'unknown'];
     }

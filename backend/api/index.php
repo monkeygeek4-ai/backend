@@ -43,7 +43,6 @@ switch (true) {
         require __DIR__ . '/auth/me.php';
         break;
     
-    // НОВЫЕ ENDPOINTS ДЛЯ SMS РЕГИСТРАЦИИ
     case $path === 'auth/send-code':
         require __DIR__ . '/auth/send-code.php';
         break;
@@ -60,6 +59,12 @@ switch (true) {
     case $path === 'invites':
     case $path === 'invites/':
         require __DIR__ . '/invites/index.php';
+        break;
+    
+    // НОВЫЙ МАРШРУТ: Удаление инвайта
+    case preg_match('#^invites/([A-Z0-9]+)$#', $path, $matches):
+        $_GET['code'] = $matches[1];
+        require __DIR__ . '/invites/delete.php';
         break;
     
     // ============ USER ROUTES ============
@@ -98,10 +103,15 @@ switch (true) {
         $_GET['chatId'] = $matches[1];
         require __DIR__ . '/chats/show.php';
         break;
+        
+    case preg_match('#^chats/([^/]+)/delete$#', $path, $matches):
+        $_GET['chatId'] = $matches[1];
+        require __DIR__ . '/chats/delete.php';
+        break;
     
     // ============ MESSAGE ROUTES ============
     case $path === 'messages':
-    case preg_match('#^messages\?chatId=(.+)#', $path):
+    case $path === 'messages/':
         require __DIR__ . '/messages/index.php';
         break;
         
@@ -109,63 +119,17 @@ switch (true) {
         require __DIR__ . '/messages/send.php';
         break;
         
-    case $path === 'messages/mark-read':
-        require __DIR__ . '/messages/mark-read.php';
-        break;
-        
-    case preg_match('#^messages/chat/([^/]+)$#', $path, $matches):
-        $_GET['chatId'] = $matches[1];
-        require __DIR__ . '/messages/chat.php';
+    case $path === 'messages/read':
+        require __DIR__ . '/messages/read.php';
         break;
     
-    // ============ CALL ROUTES ============
-    case $path === 'calls/initiate':
-        require __DIR__ . '/calls/initiate.php';
-        break;
-        
-    case $path === 'calls/answer':
-        require __DIR__ . '/calls/answer.php';
-        break;
-        
-    case $path === 'calls/end':
-        require __DIR__ . '/calls/end.php';
-        break;
-    
-    // ============ DEFAULT ============
+    // ============ 404 ============
     default:
         http_response_code(404);
         echo json_encode([
+            'success' => false,
             'error' => 'Endpoint not found',
-            'path' => $path,
-            'available_endpoints' => [
-                'auth' => [
-                    'POST /auth/login',
-                    'POST /auth/register',
-                    'GET /auth/me',
-                    'POST /auth/send-code',
-                    'POST /auth/verify-code',
-                ],
-                'invites' => [
-                    'POST /invites/create',
-                    'GET /invites',
-                ],
-                'chats' => [
-                    'GET /chats',
-                    'POST /chats/create',
-                    'GET /chats/users',
-                    'GET /chats/{chatId}',
-                ],
-                'messages' => [
-                    'GET /messages?chatId={id}',
-                    'POST /messages/send',
-                    'POST /messages/mark-read',
-                ],
-                'calls' => [
-                    'POST /calls/initiate',
-                    'POST /calls/answer',
-                    'POST /calls/end',
-                ],
-            ]
+            'path' => $path
         ]);
         break;
 }
