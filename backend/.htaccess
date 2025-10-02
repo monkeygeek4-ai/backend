@@ -11,9 +11,9 @@
     RewriteCond %{REQUEST_METHOD} OPTIONS
     RewriteRule ^(.*)$ $1 [R=204,L]
     
-    # API маршруты направляем на backend/api/index.php
-    RewriteCond %{REQUEST_URI} ^/backend/api/
-    RewriteRule ^backend/api/(.*)$ backend/api/index.php [L,QSA]
+    # API маршруты - УБИРАЕМ это правило, пусть обрабатывает backend/api/.htaccess
+    # RewriteCond %{REQUEST_URI} ^/backend/api/
+    # RewriteRule ^backend/api/(.*)$ backend/api/index.php [L,QSA]
     
     # Flutter Web файлы - доставляем как есть
     RewriteCond %{REQUEST_FILENAME} -f
@@ -29,7 +29,7 @@
 # Защита от листинга директорий
 Options -Indexes
 
-# PHP настройки (если поддерживается)
+# PHP настройки
 <IfModule mod_php.c>
     php_value upload_max_filesize 10M
     php_value post_max_size 10M
