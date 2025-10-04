@@ -82,9 +82,19 @@ try {
         exit;
     }
     
-    error_log("Invite $inviteCode is valid");
+    // ШАГ 2: Проверяем, не использован ли уже этот инвайт
+    if ($inviteCheck['invite']['used']) {
+        error_log("Invite already used: $inviteCode");
+        Response::json([
+            'success' => false,
+            'error' => 'Этот код приглашения уже использован'
+        ]);
+        exit;
+    }
     
-    // ШАГ 2: Регистрируем пользователя
+    error_log("Invite $inviteCode is valid and not used");
+    
+    // ШАГ 3: Регистрируем пользователя
     error_log("Registering user: $username ($email)");
     $registerResult = $auth->register($username, $email, $password, $fullName);
     
@@ -97,7 +107,7 @@ try {
     $userId = $registerResult['user']['id'];
     error_log("User registered successfully: $userId");
     
-    // ШАГ 3: Помечаем инвайт как использованный
+    // ШАГ 4: Помечаем инвайт как использованный
     error_log("Marking invite $inviteCode as used by user $userId");
     $useResult = $inviteManager->useInvite($inviteCode, $userId);
     
@@ -108,7 +118,7 @@ try {
         error_log("Invite $inviteCode successfully marked as used");
     }
     
-    // ШАГ 4: Возвращаем успешный результат
+    // ШАГ 5: Возвращаем успешный результат
     Response::json([
         'success' => true,
         'token' => $registerResult['token'],
