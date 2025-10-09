@@ -153,6 +153,15 @@ switch (true) {
         require __DIR__ . '/messages/read.php';
         break;
     
+    // ============ NOTIFICATION ROUTES ============
+    // POST /notifications/register - регистрация FCM токена
+    case $path === 'notifications/register':
+        require __DIR__ . '/notifications/register.php';
+        break;
+    // POST /notifications/test - тестовое уведомление
+    case $path === 'notifications/test':
+        require __DIR__ . '/notifications/test.php';
+        break;
     // ============ 404 ============
     default:
         http_response_code(404);

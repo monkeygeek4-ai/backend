@@ -2,6 +2,8 @@
 // backend/websocket/call_handlers.php
 // Обработчики звонков для WebSocket сервера
 
+require_once __DIR__ . '/../lib/PushNotificationService.php';
+
 /**
  * Главная функция для обработки всех типов сообщений звонков
  */
@@ -236,6 +238,7 @@ function handleCallOffer($data, $from, $clients, $db) {
         }
     }
     
+    // Если получатель не онлайн - отправляем Push-уведомление
     if (!$receiverFound) {
         error_log("========================================");
         error_log("❌❌❌ ПОЛУЧАТЕЛЬ НЕ НАЙДЕН В СЕТИ!");
@@ -262,6 +265,27 @@ function handleCallOffer($data, $from, $clients, $db) {
         }
         error_log("========================================");
         
+        // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ О ВХОДЯЩЕМ ЗВОНКЕ
+        error_log("📱 Получатель оффлайн - отправка Push-уведомления...");
+        try {
+            $pushService = new PushNotificationService();
+            $pushResult = $pushService->sendIncomingCallNotification(
+                $receiverId,
+                $callId,
+                $caller['username'] ?? $caller['email'],
+                $callType,
+                $caller['avatar_url']
+            );
+            
+            if ($pushResult) {
+                error_log("✅ Push-уведомление о звонке отправлено успешно");
+            } else {
+                error_log("⚠️ Push-уведомление не было отправлено (нет токенов?)");
+            }
+        } catch (Exception $e) {
+            error_log("❌ Ошибка отправки Push-уведомления: " . $e->getMessage());
+        }
+        
         $from->send(json_encode([
             'type' => 'call_error',
             'callId' => $callId,
@@ -285,15 +309,14 @@ function handleCallOffer($data, $from, $clients, $db) {
             // Используем execute для insert
             $db->execute(
                 "INSERT INTO calls (call_uuid, chat_id, caller_id, receiver_id, call_type, status, started_at) 
-                 VALUES (:call_uuid, :chat_id, :caller_id, :receiver_id, :call_type, :status, :started_at)",
+                 VALUES (:call_uuid, :chat_id, :caller_id, :receiver_id, :call_type, :status, CURRENT_TIMESTAMP)",
                 [
                     'call_uuid' => $callId,
                     'chat_id' => $chat['id'],
                     'caller_id' => $callerId,
                     'receiver_id' => $receiverId,
                     'call_type' => $callType,
-                    'status' => 'pending',
-                    'started_at' => date('Y-m-d H:i:s')
+                    'status' => 'pending'
                 ]
             );
             error_log("✅ Звонок сохранен в БД (call_uuid: $callId)");
@@ -358,14 +381,24 @@ function handleCallAnswer($data, $from, $clients, $db) {
             error_log("  - receiver_id: " . $call['receiver_id']);
             error_log("  - status: " . $call['status']);
             
-            // Обновляем статус звонка
+            // Обновляем статус звонка (PostgreSQL использует CURRENT_TIMESTAMP)
             $db->execute(
-                "UPDATE calls SET status = 'active', connected_at = NOW() 
+                "UPDATE calls SET status = 'active', connected_at = CURRENT_TIMESTAMP 
                  WHERE call_uuid = :call_uuid",
                 ['call_uuid' => $callId]
             );
             
             error_log("✅ Статус звонка обновлен на 'active'");
+            
+            // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ ОБ ОТМЕНЕ (чтобы убрать уведомление о входящем звонке)
+            error_log("📱 Отправка Push-уведомления об отмене входящего звонка...");
+            try {
+                $pushService = new PushNotificationService();
+                $pushService->sendCallEndedNotification($userId, $callId);
+                error_log("✅ Push-уведомление об отмене отправлено");
+            } catch (Exception $e) {
+                error_log("⚠️ Ошибка отправки Push-уведомления об отмене: " . $e->getMessage());
+            }
             
             // Определяем кому отправить answer (инициатору звонка)
             $targetUserId = ($call['receiver_id'] == $userId)
@@ -527,11 +560,11 @@ function handleCallEnd($data, $from, $clients, $db) {
                 error_log("  - Звонок не был принят (нет connected_at)");
             }
             
-            // Обновляем статус
+            // Обновляем статус (PostgreSQL использует CURRENT_TIMESTAMP)
             $db->execute(
                 "UPDATE calls 
                  SET status = 'ended', 
-                     ended_at = NOW(),
+                     ended_at = CURRENT_TIMESTAMP,
                      duration = :duration,
                      end_reason = :reason
                  WHERE call_uuid = :call_uuid",
@@ -559,10 +592,11 @@ function handleCallEnd($data, $from, $clients, $db) {
                 'duration' => $duration
             ];
             
-            // Отправляем уведомление
+            // Отправляем уведомление через WebSocket
             if ($targetUserId) {
                 error_log("📤 Отправка уведомления пользователю ID: $targetUserId");
                 
+                $webSocketSent = false;
                 foreach ($clients as $client) {
                     $clientUserId = null;
                     if (isset($client->userData) && isset($client->userData->userId)) {
@@ -573,10 +607,25 @@ function handleCallEnd($data, $from, $clients, $db) {
                     
                     if ($clientUserId && $clientUserId == $targetUserId) {
                         $client->send(json_encode($message));
-                        error_log("✅ CALL_ENDED отправлен пользователю $targetUserId");
+                        error_log("✅ CALL_ENDED отправлен пользователю $targetUserId через WebSocket");
+                        $webSocketSent = true;
                         break;
                     }
                 }
+                
+                // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ ОБ ОКОНЧАНИИ ЗВОНКА
+                if (!$webSocketSent) {
+                    error_log("📱 Пользователь оффлайн - отправка Push-уведомления об окончании...");
+                }
+                
+                try {
+                    $pushService = new PushNotificationService();
+                    $pushService->sendCallEndedNotification($targetUserId, $callId);
+                    error_log("✅ Push-уведомление об окончании звонка отправлено");
+                } catch (Exception $e) {
+                    error_log("⚠️ Ошибка отправки Push-уведомления: " . $e->getMessage());
+                }
+                
             } else {
                 // Отправляем обоим участникам звонка
                 error_log("📤 Отправка уведомления обоим участникам");
@@ -594,6 +643,16 @@ function handleCallEnd($data, $from, $clients, $db) {
                         $client->send(json_encode($message));
                         error_log("✅ CALL_ENDED отправлен пользователю $clientUserId");
                     }
+                }
+                
+                // 📱 ОТПРАВКА PUSH обоим участникам
+                try {
+                    $pushService = new PushNotificationService();
+                    $pushService->sendCallEndedNotification($call['caller_id'], $callId);
+                    $pushService->sendCallEndedNotification($call['receiver_id'], $callId);
+                    error_log("✅ Push-уведомления об окончании отправлены обоим участникам");
+                } catch (Exception $e) {
+                    error_log("⚠️ Ошибка отправки Push-уведомлений: " . $e->getMessage());
                 }
             }
         } else {
@@ -644,11 +703,11 @@ function handleCallDecline($data, $from, $clients, $db) {
         if ($call) {
             error_log("✅ Звонок найден в БД");
             
-            // Обновляем статус
+            // Обновляем статус (PostgreSQL использует CURRENT_TIMESTAMP)
             $db->execute(
                 "UPDATE calls 
                  SET status = 'declined', 
-                     ended_at = NOW()
+                     ended_at = CURRENT_TIMESTAMP
                  WHERE call_uuid = :call_uuid",
                 ['call_uuid' => $callId]
             );
@@ -665,6 +724,7 @@ function handleCallDecline($data, $from, $clients, $db) {
                 'callId' => $callId
             ];
             
+            $webSocketSent = false;
             foreach ($clients as $client) {
                 $clientUserId = null;
                 if (isset($client->userData) && isset($client->userData->userId)) {
@@ -675,10 +735,25 @@ function handleCallDecline($data, $from, $clients, $db) {
                 
                 if ($clientUserId && $clientUserId == $targetUserId) {
                     $client->send(json_encode($message));
-                    error_log("✅ CALL_DECLINED отправлен пользователю $targetUserId");
+                    error_log("✅ CALL_DECLINED отправлен пользователю $targetUserId через WebSocket");
+                    $webSocketSent = true;
                     break;
                 }
             }
+            
+            // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ ОБ ОТКЛОНЕНИИ
+            if (!$webSocketSent) {
+                error_log("📱 Инициатор оффлайн - отправка Push-уведомления об отклонении...");
+            }
+            
+            try {
+                $pushService = new PushNotificationService();
+                $pushService->sendCallEndedNotification($targetUserId, $callId);
+                error_log("✅ Push-уведомление об отклонении отправлено");
+            } catch (Exception $e) {
+                error_log("⚠️ Ошибка отправки Push-уведомления: " . $e->getMessage());
+            }
+            
         } else {
             error_log("⚠️ Звонок не найден в БД: $callId");
         }
