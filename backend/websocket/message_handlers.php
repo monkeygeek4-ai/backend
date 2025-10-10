@@ -4,12 +4,41 @@
 require_once __DIR__ . '/../lib/PushNotificationService.php';
 
 /**
+ * Логирование в файл И в консоль
+ */
+function logToFile($message) {
+    $timestamp = date('Y-m-d H:i:s');
+    
+    // Выводим в консоль (stdout)
+    echo "[$timestamp] $message" . PHP_EOL;
+    
+    // Пытаемся также записать в файл
+    try {
+        $logDir = __DIR__ . '/../logs';
+        if (!file_exists($logDir)) {
+            @mkdir($logDir, 0777, true);
+        }
+        
+        if (is_writable($logDir) || is_writable(__DIR__ . '/..')) {
+            $logFile = $logDir . '/message_handlers_' . date('Y-m-d') . '.log';
+            $logMessage = "[$timestamp] $message" . PHP_EOL;
+            @file_put_contents($logFile, $logMessage, FILE_APPEND);
+        }
+    } catch (Exception $e) {
+        echo "⚠️ Не удалось записать в лог-файл: " . $e->getMessage() . PHP_EOL;
+    }
+    
+    // Также дублируем в error_log
+    error_log($message);
+}
+
+/**
  * Обработка отправки сообщения
  */
 function handleSendMessage($data, $from, $clients, $db) {
-    error_log("========================================");
-    error_log("📨 PROCESSING MESSAGE");
-    error_log("========================================");
+    logToFile("========================================");
+    logToFile("📨 PROCESSING MESSAGE");
+    logToFile("========================================");
     
     $chatId = $data['chatId'] ?? null;
     $content = $data['content'] ?? null;
@@ -23,15 +52,15 @@ function handleSendMessage($data, $from, $clients, $db) {
         $userId = $from->userId;
     }
     
-    error_log("📋 Параметры:");
-    error_log("  - chatId: " . ($chatId ?? 'NULL'));
-    error_log("  - content length: " . (isset($content) ? strlen($content) : 0));
-    error_log("  - tempId: " . ($tempId ?? 'NULL'));
-    error_log("  - from userId: " . ($userId ?? 'NULL'));
+    logToFile("📋 Параметры:");
+    logToFile("  - chatId: " . ($chatId ?? 'NULL'));
+    logToFile("  - content length: " . (isset($content) ? strlen($content) : 0));
+    logToFile("  - tempId: " . ($tempId ?? 'NULL'));
+    logToFile("  - from userId: " . ($userId ?? 'NULL'));
     
     if (!$chatId || !$content || !$userId) {
-        error_log("❌ MESSAGE ERROR: недостаточно данных");
-        error_log("========================================");
+        logToFile("❌ MESSAGE ERROR: недостаточно данных");
+        logToFile("========================================");
         return;
     }
     
@@ -43,40 +72,68 @@ function handleSendMessage($data, $from, $clients, $db) {
         );
         
         if (!$chat) {
-            error_log("❌ MESSAGE ERROR: чат не найден");
-            error_log("========================================");
+            logToFile("❌ MESSAGE ERROR: чат не найден");
+            logToFile("========================================");
             return;
         }
         
-        error_log("✅ Чат найден: ID {$chat['id']}");
+        logToFile("✅ Чат найден: ID {$chat['id']}");
         
-        // Определяем получателя
-        $receiverId = ($chat['sender_id'] == $userId) 
-            ? $chat['receiver_id'] 
-            : $chat['sender_id'];
+        // ⭐ ИСПРАВЛЕНО: Получаем участников чата из chat_participants
+        $participants = $db->fetchAll(
+            "SELECT user_id FROM chat_participants WHERE chat_id = :chat_id",
+            ['chat_id' => $chat['id']]
+        );
         
-        error_log("📤 Получатель: userId $receiverId");
+        // Находим получателя (все участники кроме отправителя)
+        $receiverId = null;
+        foreach ($participants as $participant) {
+            if ($participant['user_id'] != $userId) {
+                $receiverId = $participant['user_id'];
+                break;
+            }
+        }
         
-        // Генерируем UUID для сообщения
+        if (!$receiverId) {
+            logToFile("❌ MESSAGE ERROR: получатель не найден");
+            logToFile("========================================");
+            return;
+        }
+        
+        logToFile("📤 Получатель: userId $receiverId");
+        
+        // Генерируем UUID для сообщения (для совместимости)
         $messageUuid = generateUUID();
         
-        // Сохраняем сообщение в БД
-        $messageId = $db->insert('messages', [
-            'message_uuid' => $messageUuid,
-            'chat_id' => $chat['id'],
-            'sender_id' => $userId,
-            'receiver_id' => $receiverId,
-            'content' => $content,
-            'message_type' => 'text',
-            'is_read' => 0,
-        ]);
+        // ⭐ ИСПРАВЛЕНО: Сохраняем сообщение с правильными полями
+        $insertResult = $db->execute(
+            "INSERT INTO messages (chat_id, sender_id, content, type, created_at, status) 
+             VALUES (:chat_id, :sender_id, :content, :type, NOW(), :status)
+             RETURNING id",
+            [
+                'chat_id' => $chat['id'],
+                'sender_id' => $userId,
+                'content' => $content,
+                'type' => 'text',
+                'status' => 'отправлено'
+            ]
+        );
         
-        error_log("✅ Сообщение сохранено в БД: ID $messageId");
+        // Получаем ID вставленного сообщения
+        $messageId = $insertResult[0]['id'] ?? null;
+        
+        if (!$messageId) {
+            logToFile("❌ MESSAGE ERROR: не удалось получить ID сообщения");
+            logToFile("========================================");
+            return;
+        }
+        
+        logToFile("✅ Сообщение сохранено в БД: ID $messageId");
         
         // Обновляем last_message_at в чате
         $db->execute(
-            "UPDATE chats SET last_message_at = NOW() WHERE id = :id",
-            ['id' => $chat['id']]
+            "UPDATE chats SET last_message = :content, last_message_at = NOW() WHERE id = :id",
+            ['content' => $content, 'id' => $chat['id']]
         );
         
         // Получаем информацию об отправителе
@@ -85,29 +142,36 @@ function handleSendMessage($data, $from, $clients, $db) {
             ['id' => $userId]
         );
         
+        logToFile("📨 Формируем сообщение для отправки:");
+        logToFile("  - Message ID: $messageId");
+        logToFile("  - Sender: {$sender['username']} (ID: $userId)");
+        logToFile("  - Receiver ID: $receiverId");
+        
         // Формируем сообщение для отправки
         $message = [
             'type' => 'new_message',
             'chatId' => $chatId,
             'message' => [
-                'id' => $messageUuid,
+                'id' => (string)$messageId,
                 'tempId' => $tempId,
                 'content' => $content,
                 'senderId' => (string)$userId,
                 'receiverId' => (string)$receiverId,
                 'messageType' => 'text',
                 'isRead' => false,
-                'createdAt' => date('Y-m-d H:i:s'),
-                'sender' => [
-                    'username' => $sender['username'],
-                    'email' => $sender['email'],
-                    'avatarUrl' => $sender['avatar_url'],
-                ],
+                'timestamp' => date('c'),
+                'senderName' => $sender['username'],
+                'senderAvatar' => $sender['avatar_url'],
             ],
         ];
         
+        logToFile("🔍 Проверка подключенных клиентов:");
+        logToFile("  - Всего клиентов: " . count($clients));
+        
         // Отправляем через WebSocket получателю
-        $sent = false;
+        $webSocketSent = false;
+        $clientsInfo = [];
+        
         foreach ($clients as $client) {
             $clientUserId = null;
             if (isset($client->userData) && isset($client->userData->userId)) {
@@ -116,56 +180,66 @@ function handleSendMessage($data, $from, $clients, $db) {
                 $clientUserId = $client->userId;
             }
             
+            $clientsInfo[] = "Client ID: {$client->resourceId}, User ID: " . ($clientUserId ?? 'NULL');
+            
             if ($clientUserId && $clientUserId == $receiverId) {
                 $client->send(json_encode($message));
-                error_log("✅ Сообщение отправлено через WebSocket получателю $receiverId");
-                $sent = true;
+                logToFile("✅ Сообщение отправлено через WebSocket получателю $receiverId");
+                logToFile("  - Resource ID: {$client->resourceId}");
+                $webSocketSent = true;
                 break;
             }
         }
         
-        // Если получатель не онлайн, отправляем Push-уведомление
-        if (!$sent) {
-            error_log("📱 Получатель не онлайн, отправка Push-уведомления");
-            
-            $pushService = new PushNotificationService();
-            $pushService->sendNewMessageNotification(
-                $receiverId,
-                $chatId,
-                $sender['username'] ?? $sender['email'],
-                $content,
-                $sender['avatar_url']
-            );
-            
-            error_log("✅ Push-уведомление отправлено");
+        // Логируем информацию о всех клиентах
+        foreach ($clientsInfo as $info) {
+            logToFile("  - $info");
         }
         
-        // Подтверждение отправителю
-        $confirmation = [
-            'type' => 'message_sent',
-            'tempId' => $tempId,
-            'messageId' => $messageUuid,
-            'chatId' => $chatId,
-        ];
+        if (!$webSocketSent) {
+            logToFile("⚠️ Получатель $receiverId не найден в списке подключенных клиентов");
+            logToFile("⚠️ Сообщение НЕ отправлено через WebSocket!");
+        }
         
-        $from->send(json_encode($confirmation));
-        error_log("✅ Подтверждение отправлено отправителю");
+        // 📱 ВАЖНО: Отправляем Push ВСЕГДА, даже если пользователь онлайн
+        // Это нужно для случаев когда вкладка в фоне или браузер свернут
+        logToFile("📱 Отправка Push-уведомления получателю $receiverId");
+        
+        try {
+            $pushService = new PushNotificationService();
+            $result = $pushService->sendNewMessageNotification(
+                $receiverId,
+                $chatId,
+                $sender['username'] ?? 'Пользователь',
+                $content,
+                null
+            );
+            
+            if ($result) {
+                logToFile("✅ Push-уведомление успешно отправлено");
+            } else {
+                logToFile("⚠️ Не удалось отправить Push-уведомление (возможно, нет FCM токена)");
+            }
+        } catch (Exception $e) {
+            logToFile("⚠️ Ошибка отправки Push-уведомления: " . $e->getMessage());
+            logToFile("⚠️ Stack trace: " . $e->getTraceAsString());
+        }
         
     } catch (Exception $e) {
-        error_log("❌ MESSAGE ERROR: " . $e->getMessage());
-        error_log($e->getTraceAsString());
+        logToFile("❌ MESSAGE ERROR: " . $e->getMessage());
+        logToFile("❌ Stack trace: " . $e->getTraceAsString());
     }
     
-    error_log("========================================");
+    logToFile("========================================");
 }
 
 /**
- * Обработка прочтения сообщения
+ * Обработка отметки сообщения как прочитанного
  */
 function handleMarkAsRead($data, $from, $clients, $db) {
-    error_log("========================================");
-    error_log("👁️ PROCESSING MARK_AS_READ");
-    error_log("========================================");
+    logToFile("========================================");
+    logToFile("📖 MARK AS READ");
+    logToFile("========================================");
     
     $messageId = $data['messageId'] ?? null;
     
@@ -177,44 +251,38 @@ function handleMarkAsRead($data, $from, $clients, $db) {
         $userId = $from->userId;
     }
     
-    error_log("📋 Параметры:");
-    error_log("  - messageId: " . ($messageId ?? 'NULL'));
-    error_log("  - from userId: " . ($userId ?? 'NULL'));
+    logToFile("📋 Параметры:");
+    logToFile("  - messageId: " . ($messageId ?? 'NULL'));
+    logToFile("  - from userId: " . ($userId ?? 'NULL'));
     
     if (!$messageId || !$userId) {
-        error_log("❌ MARK_AS_READ ERROR: недостаточно данных");
-        error_log("========================================");
+        logToFile("❌ MARK_AS_READ ERROR: недостаточно данных");
+        logToFile("========================================");
         return;
     }
     
     try {
         // Получаем сообщение
         $message = $db->fetchOne(
-            "SELECT * FROM messages WHERE message_uuid = :message_uuid",
-            ['message_uuid' => $messageId]
+            "SELECT * FROM messages WHERE id = :message_id",
+            ['message_id' => $messageId]
         );
         
         if (!$message) {
-            error_log("❌ MARK_AS_READ ERROR: сообщение не найдено");
-            error_log("========================================");
+            logToFile("❌ MARK_AS_READ ERROR: сообщение не найдено");
+            logToFile("========================================");
             return;
         }
         
-        // Проверяем, что пользователь - получатель
-        if ($message['receiver_id'] != $userId) {
-            error_log("❌ MARK_AS_READ ERROR: пользователь не является получателем");
-            error_log("========================================");
-            return;
-        }
-        
-        // Обновляем статус
+        // Обновляем last_read_at для пользователя
         $db->execute(
-            "UPDATE messages SET is_read = 1, read_at = NOW() 
-             WHERE message_uuid = :message_uuid",
-            ['message_uuid' => $messageId]
+            "UPDATE chat_participants 
+             SET last_read_at = NOW()
+             WHERE chat_id = :chat_id AND user_id = :user_id",
+            ['chat_id' => $message['chat_id'], 'user_id' => $userId]
         );
         
-        error_log("✅ Сообщение отмечено как прочитанное");
+        logToFile("✅ Сообщение отмечено как прочитанное");
         
         // Уведомляем отправителя
         $notification = [
@@ -232,14 +300,29 @@ function handleMarkAsRead($data, $from, $clients, $db) {
             
             if ($clientUserId && $clientUserId == $message['sender_id']) {
                 $client->send(json_encode($notification));
-                error_log("✅ Уведомление о прочтении отправлено");
+                logToFile("✅ Уведомление о прочтении отправлено");
                 break;
             }
         }
         
     } catch (Exception $e) {
-        error_log("❌ MARK_AS_READ ERROR: " . $e->getMessage());
+        logToFile("❌ MARK_AS_READ ERROR: " . $e->getMessage());
+        logToFile("❌ Stack trace: " . $e->getTraceAsString());
     }
     
-    error_log("========================================");
+    logToFile("========================================");
+}
+
+function generateUUID() {
+    return sprintf(
+        '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
+        mt_rand(0, 0xffff),
+        mt_rand(0, 0xffff),
+        mt_rand(0, 0xffff),
+        mt_rand(0, 0x0fff) | 0x4000,
+        mt_rand(0, 0x3fff) | 0x8000,
+        mt_rand(0, 0xffff),
+        mt_rand(0, 0xffff),
+        mt_rand(0, 0xffff)
+    );
 }

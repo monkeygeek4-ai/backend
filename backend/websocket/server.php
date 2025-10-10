@@ -5,6 +5,7 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 require_once dirname(__DIR__) . '/lib/Database.php';
 require_once dirname(__DIR__) . '/lib/Auth.php';
 require_once __DIR__ . '/call_handlers.php';
+require_once __DIR__ . '/message_handlers.php';  // ⭐ ДОБАВЛЕНО!
 
 use Ratchet\Server\IoServer;
 use Ratchet\Http\HttpServer;
@@ -48,17 +49,24 @@ class ChatWebSocket implements MessageComponentInterface {
     }
 
     public function onMessage(ConnectionInterface $from, $msg) {
-        echo "Сообщение от {$from->resourceId}: $msg\n";
+        echo "========================================\n";
+        echo "📨 ПОЛУЧЕНО СООБЩЕНИЕ!\n";
+        echo "От: {$from->resourceId}\n";
+        echo "Сообщение: $msg\n";
+        echo "========================================\n";
         
         try {
             $data = json_decode($msg, true);
             
             if (!$data) {
-                echo "Ошибка парсинга JSON\n";
+                echo "❌ Ошибка парсинга JSON\n";
+                echo "========================================\n";
                 return;
             }
             
+            echo "✅ JSON распарсен успешно\n";
             echo "Тип сообщения: {$data['type']}\n";
+            echo "========================================\n";
             
             // Проверяем авторизацию для всех типов кроме auth и ping
             if ($data['type'] !== 'auth' && $data['type'] !== 'ping') {
@@ -109,13 +117,17 @@ class ChatWebSocket implements MessageComponentInterface {
                     break;
                     
                 case 'send_message':
-                    echo "Вызываем handleMessage для send_message\n";
-                    $this->handleMessage($from, $data);
-                    break;
-                    
                 case 'message':
-                    echo "Вызываем handleMessage для message\n";
-                    $this->handleMessage($from, $data);
+                    // ⭐ ИСПРАВЛЕНО: Вызываем handleSendMessage из message_handlers.php
+                    echo "========================================\n";
+                    echo "🔥🔥🔥 ВЫЗЫВАЕМ handleSendMessage!\n";
+                    echo "От пользователя: {$from->userData->username} (ID: {$from->userData->userId})\n";
+                    echo "Данные: " . json_encode($data) . "\n";
+                    echo "========================================\n";
+                    handleSendMessage($data, $from, $this->clients, $this->db);
+                    echo "========================================\n";
+                    echo "✅ handleSendMessage завершен\n";
+                    echo "========================================\n";
                     break;
                     
                 case 'join_chat':
@@ -127,7 +139,8 @@ class ChatWebSocket implements MessageComponentInterface {
                     break;
                     
                 case 'mark_read':
-                    $this->handleMarkRead($from, $data);
+                    // ⭐ ИСПРАВЛЕНО: Вызываем handleMarkAsRead из message_handlers.php
+                    handleMarkAsRead($data, $from, $this->clients, $this->db);
                     break;
                     
                 case 'call_offer':
@@ -300,195 +313,6 @@ class ChatWebSocket implements MessageComponentInterface {
         }
     }
     
-    protected function handleMessage($conn, $data) {
-        echo "handleMessage вызван для соединения {$conn->resourceId}\n";
-        
-        // Проверяем авторизацию
-        if (!$conn->userData->isAuthorized) {
-            echo "Ошибка: соединение {$conn->resourceId} не авторизовано\n";
-            $conn->send(json_encode([
-                'type' => 'error',
-                'message' => 'Требуется авторизация'
-            ]));
-            return;
-        }
-        
-        echo "Пользователь авторизован: userId={$conn->userData->userId}, username={$conn->userData->username}\n";
-        
-        $chatId = $data['chatId'] ?? null;
-        $content = $data['content'] ?? null;
-        $tempId = $data['tempId'] ?? null;
-        $messageType = $data['messageType'] ?? 'text';
-        
-        if (!$chatId || !$content) {
-            echo "Ошибка: отсутствует chatId или content\n";
-            return;
-        }
-        
-        echo "Обработка сообщения от {$conn->userData->username} в чат {$chatId}: {$content}\n";
-        
-        // Сохраняем сообщение в БД
-        $messageId = $this->saveMessage($chatId, $conn->userData->userId, $content, $messageType);
-        
-        if (!$messageId) {
-            echo "Ошибка сохранения сообщения в БД\n";
-            return;
-        }
-        
-        // Получаем ID чата для проверки статусов
-        $chat = $this->db->fetchOne(
-            "SELECT id FROM chats WHERE chat_uuid = :chat_uuid",
-            ['chat_uuid' => $chatId]
-        );
-        
-        // Определяем начальный статус сообщения
-        $initialStatus = 'отправлено';
-        
-        // Проверяем, есть ли другие участники онлайн
-        $participants = $this->getChatParticipants($chatId);
-        $hasOnlineRecipients = false;
-        
-        foreach ($participants as $participantId) {
-            if ($participantId != $conn->userData->userId && isset($this->userConnections[$participantId])) {
-                $hasOnlineRecipients = true;
-                
-                // Проверяем, находится ли получатель в этом чате
-                if ($this->userConnections[$participantId]->userData->currentChatId == $chatId) {
-                    $initialStatus = 'прочитано';
-                    
-                    // Обновляем last_read_at для получателя
-                    $this->db->execute(
-                        "UPDATE chat_participants 
-                         SET last_read_at = NOW() 
-                         WHERE chat_id = :chat_id AND user_id = :user_id",
-                        ['chat_id' => $chat['id'], 'user_id' => $participantId]
-                    );
-                } else {
-                    $initialStatus = 'доставлено';
-                }
-                break;
-            }
-        }
-        
-        // Создаем объект сообщения
-        $message = [
-            'id' => (string)$messageId,
-            'chatId' => $chatId,
-            'senderId' => (string)$conn->userData->userId,
-            'senderName' => $conn->userData->username,
-            'content' => $content,
-            'timestamp' => date('c'),
-            'type' => $messageType,
-            'status' => $initialStatus
-        ];
-        
-        echo "Участники чата: " . implode(', ', $participants) . "\n";
-        echo "Начальный статус сообщения: $initialStatus\n";
-        
-        // ВАЖНО: Отправляем сообщение ВСЕМ участникам, включая отправителя
-        $sentCount = 0;
-        foreach ($participants as $participantId) {
-            if (isset($this->userConnections[$participantId])) {
-                $messageType = ($participantId == $conn->userData->userId) ? 'message_sent' : 'message';
-                
-                $payload = [
-                    'type' => $messageType,
-                    'message' => $message
-                ];
-                
-                // Добавляем tempId для отправителя
-                if ($participantId == $conn->userData->userId && $tempId) {
-                    $payload['tempId'] = $tempId;
-                }
-                
-                $this->userConnections[$participantId]->send(json_encode($payload));
-                echo "Сообщение отправлено пользователю ID: {$participantId} (тип: $messageType)\n";
-                $sentCount++;
-            } else {
-                echo "Пользователь ID: {$participantId} не подключен к WebSocket\n";
-            }
-        }
-        
-        echo "Сообщение разослано {$sentCount} пользователям\n";
-        
-        // Обновляем последнее сообщение в чате
-        $this->updateChatLastMessage($chatId, $content);
-    }
-    
-    protected function handleMarkRead($conn, $data) {
-        if (!$conn->userData->isAuthorized) {
-            echo "Mark read: пользователь не авторизован\n";
-            return;
-        }
-        
-        $chatId = $data['chatId'] ?? null;
-        $messageId = $data['messageId'] ?? null;
-        
-        if (!$chatId) {
-            echo "Mark read: chatId не указан\n";
-            return;
-        }
-        
-        echo "=== MARK READ ===\n";
-        echo "Пользователь {$conn->userData->username} (ID: {$conn->userData->userId}) отмечает прочитанным чат {$chatId}\n";
-        
-        // Получаем ID чата
-        $chat = $this->db->fetchOne(
-            "SELECT id FROM chats WHERE chat_uuid = :chat_uuid",
-            ['chat_uuid' => $chatId]
-        );
-        
-        if (!$chat) {
-            echo "Чат не найден: {$chatId}\n";
-            return;
-        }
-        
-        echo "ID чата в БД: {$chat['id']}\n";
-        
-        // Обновляем время последнего прочтения
-        $result = $this->db->execute(
-            "UPDATE chat_participants 
-             SET last_read_at = NOW()
-             WHERE user_id = :user_id AND chat_id = :chat_id",
-            ['user_id' => $conn->userData->userId, 'chat_id' => $chat['id']]
-        );
-        
-        echo "Обновлено строк в chat_participants: " . ($result ? "успешно" : "ошибка") . "\n";
-        
-        // Получаем все непрочитанные сообщения от других пользователей
-        $unreadMessages = $this->db->fetchAll(
-            "SELECT m.id, m.sender_id
-             FROM messages m
-             WHERE m.chat_id = :chat_id
-             AND m.sender_id != :user_id
-             AND m.is_deleted = false
-             ORDER BY m.created_at DESC",
-            ['chat_id' => $chat['id'], 'user_id' => $conn->userData->userId]
-        );
-        
-        echo "Найдено сообщений для отметки как прочитанных: " . count($unreadMessages) . "\n";
-        
-        // Уведомляем отправителей о прочтении их сообщений
-        $notifiedUsers = [];
-        foreach ($unreadMessages as $msg) {
-            if (!in_array($msg['sender_id'], $notifiedUsers)) {
-                if (isset($this->userConnections[$msg['sender_id']])) {
-                    $this->userConnections[$msg['sender_id']]->send(json_encode([
-                        'type' => 'message_read',
-                        'chatId' => $chatId,
-                        'messageId' => $msg['id'],
-                        'readBy' => $conn->userData->userId,
-                        'status' => 'прочитано'
-                    ]));
-                    echo "Уведомлен пользователь ID {$msg['sender_id']} о прочтении сообщения {$msg['id']}\n";
-                }
-                $notifiedUsers[] = $msg['sender_id'];
-            }
-        }
-        
-        echo "=== END MARK READ ===\n\n";
-    }
-    
     protected function getChatParticipants($chatUuid) {
         $participants = $this->db->fetchAll(
             "SELECT user_id FROM chat_participants 
@@ -497,60 +321,6 @@ class ChatWebSocket implements MessageComponentInterface {
         );
         
         return array_column($participants, 'user_id');
-    }
-    
-    protected function saveMessage($chatUuid, $userId, $content, $type = 'text') {
-        // Получаем ID чата
-        $chat = $this->db->fetchOne(
-            "SELECT id FROM chats WHERE chat_uuid = :chat_uuid",
-            ['chat_uuid' => $chatUuid]
-        );
-        
-        if (!$chat) {
-            echo "Чат не найден: {$chatUuid}\n";
-            return null;
-        }
-        
-        try {
-            // Сохраняем сообщение
-            $this->db->execute(
-                "INSERT INTO messages (chat_id, sender_id, content, type, created_at, status) 
-                 VALUES (:chat_id, :sender_id, :content, :type, NOW(), 'отправлено')",
-                [
-                    'chat_id' => $chat['id'],
-                    'sender_id' => $userId,
-                    'content' => $content,
-                    'type' => $type
-                ]
-            );
-            
-            // Получаем ID последнего вставленного сообщения
-            $messageId = $this->db->lastInsertId();
-            
-            echo "Сообщение сохранено с ID: {$messageId}\n";
-            return $messageId;
-            
-        } catch (Exception $e) {
-            echo "Ошибка сохранения сообщения: " . $e->getMessage() . "\n";
-            return null;
-        }
-    }
-    
-    protected function updateChatLastMessage($chatUuid, $content) {
-        try {
-            $this->db->execute(
-                "UPDATE chats 
-                 SET last_message = :content, 
-                     last_message_at = NOW() 
-                 WHERE chat_uuid = :chat_uuid",
-                [
-                    'content' => $content,
-                    'chat_uuid' => $chatUuid
-                ]
-            );
-        } catch (Exception $e) {
-            echo "Ошибка обновления последнего сообщения: " . $e->getMessage() . "\n";
-        }
     }
     
     protected function broadcastUserStatus($userId, $isOnline) {
