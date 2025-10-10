@@ -238,53 +238,55 @@ function handleCallOffer($data, $from, $clients, $db) {
         }
     }
     
-    // Если получатель не онлайн - отправляем Push-уведомление
+    // ⭐⭐⭐ ВАЖНО: ОТПРАВЛЯЕМ PUSH-УВЕДОМЛЕНИЕ ВСЕГДА (даже если пользователь онлайн)
+    // Потому что приложение может быть в фоне или на другом устройстве
+    error_log("========================================");
+    error_log("📱📱📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ О ЗВОНКЕ");
+    error_log("========================================");
+    error_log("  Получатель: User ID $receiverId");
+    error_log("  Звонящий: " . ($caller['username'] ?? $caller['email']));
+    error_log("  Тип звонка: $callType");
+    
+    try {
+        $pushService = new PushNotificationService();
+        $pushResult = $pushService->sendIncomingCallNotification(
+            $receiverId,
+            $callId,
+            $caller['username'] ?? $caller['email'],
+            $callType,
+            $caller['avatar_url']
+        );
+        
+        if ($pushResult) {
+            error_log("========================================");
+            error_log("✅✅✅ PUSH-УВЕДОМЛЕНИЕ ОТПРАВЛЕНО УСПЕШНО!");
+            error_log("========================================");
+        } else {
+            error_log("========================================");
+            error_log("⚠️⚠️⚠️ PUSH-УВЕДОМЛЕНИЕ НЕ ОТПРАВЛЕНО!");
+            error_log("  Возможные причины:");
+            error_log("  - Нет FCM токенов для пользователя $receiverId");
+            error_log("  - Токены устарели");
+            error_log("  - Ошибка Firebase");
+            error_log("========================================");
+        }
+    } catch (Exception $e) {
+        error_log("========================================");
+        error_log("❌❌❌ ОШИБКА ОТПРАВКИ PUSH-УВЕДОМЛЕНИЯ!");
+        error_log("  Ошибка: " . $e->getMessage());
+        error_log("  Trace: " . $e->getTraceAsString());
+        error_log("========================================");
+    }
+    
+    // Если получатель не был найден онлайн
     if (!$receiverFound) {
         error_log("========================================");
-        error_log("❌❌❌ ПОЛУЧАТЕЛЬ НЕ НАЙДЕН В СЕТИ!");
+        error_log("⚠️ ПОЛУЧАТЕЛЬ НЕ НАЙДЕН В СЕТИ!");
         error_log("========================================");
         error_log("Искали пользователя: ID $receiverId");
         error_log("Всего подключенных клиентов: " . count($clients));
         error_log("Подключенные пользователи: " . json_encode($connectedUsers));
         error_log("========================================");
-        
-        // Детальный вывод всех подключенных
-        error_log("Детали всех подключенных клиентов:");
-        $index = 1;
-        foreach ($clients as $client) {
-            $clientUserId = null;
-            if (isset($client->userData) && isset($client->userData->userId)) {
-                $clientUserId = $client->userData->userId;
-            } elseif (isset($client->userId)) {
-                $clientUserId = $client->userId;
-            }
-            
-            error_log("  [$index] Connection ID: {$client->resourceId}");
-            error_log("      User ID: " . ($clientUserId ?? 'NOT AUTHORIZED'));
-            $index++;
-        }
-        error_log("========================================");
-        
-        // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ О ВХОДЯЩЕМ ЗВОНКЕ
-        error_log("📱 Получатель оффлайн - отправка Push-уведомления...");
-        try {
-            $pushService = new PushNotificationService();
-            $pushResult = $pushService->sendIncomingCallNotification(
-                $receiverId,
-                $callId,
-                $caller['username'] ?? $caller['email'],
-                $callType,
-                $caller['avatar_url']
-            );
-            
-            if ($pushResult) {
-                error_log("✅ Push-уведомление о звонке отправлено успешно");
-            } else {
-                error_log("⚠️ Push-уведомление не было отправлено (нет токенов?)");
-            }
-        } catch (Exception $e) {
-            error_log("❌ Ошибка отправки Push-уведомления: " . $e->getMessage());
-        }
         
         $from->send(json_encode([
             'type' => 'call_error',
@@ -596,7 +598,6 @@ function handleCallEnd($data, $from, $clients, $db) {
             if ($targetUserId) {
                 error_log("📤 Отправка уведомления пользователю ID: $targetUserId");
                 
-                $webSocketSent = false;
                 foreach ($clients as $client) {
                     $clientUserId = null;
                     if (isset($client->userData) && isset($client->userData->userId)) {
@@ -608,16 +609,11 @@ function handleCallEnd($data, $from, $clients, $db) {
                     if ($clientUserId && $clientUserId == $targetUserId) {
                         $client->send(json_encode($message));
                         error_log("✅ CALL_ENDED отправлен пользователю $targetUserId через WebSocket");
-                        $webSocketSent = true;
                         break;
                     }
                 }
                 
                 // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ ОБ ОКОНЧАНИИ ЗВОНКА
-                if (!$webSocketSent) {
-                    error_log("📱 Пользователь оффлайн - отправка Push-уведомления об окончании...");
-                }
-                
                 try {
                     $pushService = new PushNotificationService();
                     $pushService->sendCallEndedNotification($targetUserId, $callId);
@@ -724,7 +720,6 @@ function handleCallDecline($data, $from, $clients, $db) {
                 'callId' => $callId
             ];
             
-            $webSocketSent = false;
             foreach ($clients as $client) {
                 $clientUserId = null;
                 if (isset($client->userData) && isset($client->userData->userId)) {
@@ -736,16 +731,11 @@ function handleCallDecline($data, $from, $clients, $db) {
                 if ($clientUserId && $clientUserId == $targetUserId) {
                     $client->send(json_encode($message));
                     error_log("✅ CALL_DECLINED отправлен пользователю $targetUserId через WebSocket");
-                    $webSocketSent = true;
                     break;
                 }
             }
             
             // 📱 ОТПРАВКА PUSH-УВЕДОМЛЕНИЯ ОБ ОТКЛОНЕНИИ
-            if (!$webSocketSent) {
-                error_log("📱 Инициатор оффлайн - отправка Push-уведомления об отклонении...");
-            }
-            
             try {
                 $pushService = new PushNotificationService();
                 $pushService->sendCallEndedNotification($targetUserId, $callId);
@@ -762,28 +752,5 @@ function handleCallDecline($data, $from, $clients, $db) {
     }
     
     error_log("========================================");
-}
-
-/**
- * Вспомогательная функция для отладки состояния звонка
- */
-function logCallState($db, $callId) {
-    try {
-        $call = $db->fetchOne(
-            "SELECT * FROM calls WHERE call_uuid = :call_uuid",
-            ['call_uuid' => $callId]
-        );
-        
-        if ($call) {
-            error_log("========================================");
-            error_log("📊 CALL STATE:");
-            error_log(json_encode($call, JSON_PRETTY_PRINT));
-            error_log("========================================");
-        } else {
-            error_log("⚠️ CALL STATE: звонок $callId не найден в БД");
-        }
-    } catch (Exception $e) {
-        error_log("❌ CALL STATE ERROR: " . $e->getMessage());
-    }
 }
 ?>
