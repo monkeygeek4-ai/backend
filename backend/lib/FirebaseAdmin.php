@@ -55,7 +55,8 @@ class FirebaseAdmin {
         // Подписываем JWT
         $privateKey = openssl_pkey_get_private($serviceAccount['private_key']);
         openssl_sign($signatureInput, $signature, $privateKey, OPENSSL_ALGO_SHA256);
-        openssl_free_key($privateKey);
+        // ⭐ ИСПРАВЛЕНО: Убрана deprecated функция openssl_free_key()
+        // В PHP 8.0+ ресурсы освобождаются автоматически
         
         $base64UrlSignature = $this->base64UrlEncode($signature);
         $jwt = $signatureInput . '.' . $base64UrlSignature;

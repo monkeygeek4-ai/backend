@@ -79,7 +79,7 @@ function handleSendMessage($data, $from, $clients, $db) {
         
         logToFile("✅ Чат найден: ID {$chat['id']}");
         
-        // ⭐ ИСПРАВЛЕНО: Получаем участников чата из chat_participants
+        // Получаем участников чата из chat_participants
         $participants = $db->fetchAll(
             "SELECT user_id FROM chat_participants WHERE chat_id = :chat_id",
             ['chat_id' => $chat['id']]
@@ -102,11 +102,8 @@ function handleSendMessage($data, $from, $clients, $db) {
         
         logToFile("📤 Получатель: userId $receiverId");
         
-        // Генерируем UUID для сообщения (для совместимости)
-        $messageUuid = generateUUID();
-        
-        // ⭐ ИСПРАВЛЕНО: Сохраняем сообщение с правильными полями
-        $insertResult = $db->execute(
+        // ⭐ ИСПРАВЛЕНО: Используем insert() вместо execute()
+        $messageId = $db->insert(
             "INSERT INTO messages (chat_id, sender_id, content, type, created_at, status) 
              VALUES (:chat_id, :sender_id, :content, :type, NOW(), :status)
              RETURNING id",
@@ -118,9 +115,6 @@ function handleSendMessage($data, $from, $clients, $db) {
                 'status' => 'отправлено'
             ]
         );
-        
-        // Получаем ID вставленного сообщения
-        $messageId = $insertResult[0]['id'] ?? null;
         
         if (!$messageId) {
             logToFile("❌ MESSAGE ERROR: не удалось получить ID сообщения");
@@ -313,16 +307,15 @@ function handleMarkAsRead($data, $from, $clients, $db) {
     logToFile("========================================");
 }
 
+/**
+ * Генерация UUID v4
+ */
 function generateUUID() {
-    return sprintf(
-        '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
-        mt_rand(0, 0xffff),
-        mt_rand(0, 0xffff),
+    return sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
+        mt_rand(0, 0xffff), mt_rand(0, 0xffff),
         mt_rand(0, 0xffff),
         mt_rand(0, 0x0fff) | 0x4000,
         mt_rand(0, 0x3fff) | 0x8000,
-        mt_rand(0, 0xffff),
-        mt_rand(0, 0xffff),
-        mt_rand(0, 0xffff)
+        mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
     );
 }
