@@ -2,54 +2,51 @@
 // backend/lib/FCMService.php
 
 class FCMService {
-    private static $serverKey = 'BFa2MCbGoEgkfwY72WfpeycJjH4rTzboMqka_e0niTIHhLhBp_b5unNIus46patWHo9-KpqND1WiEiMkKIrjSR0'; // Замените на ваш ключ
+    // ⭐ ВАЖНО: Используйте Server Key из Firebase Console
+    // Cloud Messaging -> Server key
+    private static $serverKey = 'BFa2MCbGoEgkfwY72WfpeycJjH4rTzboMqka_e0niTIHhLhBp_b5unNIus46patWHo9-KpqND1WiEiMkKIrjSR0';
     private static $fcmUrl = 'https://fcm.googleapis.com/fcm/send';
     
     /**
      * Отправка уведомления о входящем звонке
+     * ⭐ КРИТИЧНО: Используем ТОЛЬКО data payload для Flutter
      */
     public static function sendCallNotification($fcmTokens, $callData) {
-        $notification = [
-            'title' => $callData['callType'] === 'video' ? 'Видеозвонок' : 'Аудиозвонок',
-            'body' => "Входящий звонок от {$callData['callerName']}",
-            'icon' => '/icons/Icon-192.png',
-            'badge' => '/icons/Icon-192.png',
-            'tag' => $callData['callId'],
-            'requireInteraction' => true,
-        ];
+        error_log("[FCM] ========================================");
+        error_log("[FCM] 📱 Отправка уведомления о звонке");
+        error_log("[FCM] Caller: " . $callData['callerName']);
+        error_log("[FCM] CallId: " . $callData['callId']);
+        error_log("[FCM] CallType: " . $callData['callType']);
+        error_log("[FCM] ========================================");
         
+        // ⭐ КРИТИЧНО: Для Android/Flutter используем ТОЛЬКО data payload
         $data = [
-            'type' => 'incoming_call',
-            'callId' => $callData['callId'],
-            'callerName' => $callData['callerName'],
-            'callType' => $callData['callType'],
-            'callerAvatar' => $callData['callerAvatar'] ?? null,
+            'type' => 'call',  // ⭐ ВАЖНО: 'call' а не 'incoming_call'
+            'call_id' => $callData['callId'],
+            'caller_name' => $callData['callerName'],
+            'call_type' => $callData['callType'],
+            'caller_avatar' => $callData['callerAvatar'] ?? '',
+            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
         ];
         
-        return self::sendToTokens($fcmTokens, $notification, $data);
+        error_log("[FCM] Data payload: " . json_encode($data));
+        
+        return self::sendToTokens($fcmTokens, $data);
     }
     
     /**
      * Отправка уведомления о новом сообщении
      */
     public static function sendMessageNotification($fcmTokens, $messageData) {
-        $notification = [
-            'title' => $messageData['senderName'],
-            'body' => $messageData['messageText'],
-            'icon' => '/icons/Icon-192.png',
-            'badge' => '/icons/Icon-192.png',
-            'tag' => $messageData['chatId'],
-        ];
-        
         $data = [
             'type' => 'new_message',
             'chatId' => $messageData['chatId'],
-            'senderName' => $messageData['senderName'],
-            'messageText' => $messageData['messageText'],
-            'senderAvatar' => $messageData['senderAvatar'] ?? null,
+            'sender_name' => $messageData['senderName'],
+            'message' => $messageData['messageText'],
+            'sender_avatar' => $messageData['senderAvatar'] ?? '',
         ];
         
-        return self::sendToTokens($fcmTokens, $notification, $data);
+        return self::sendToTokens($fcmTokens, $data);
     }
     
     /**
@@ -58,17 +55,18 @@ class FCMService {
     public static function sendCallEndedNotification($fcmTokens, $callId) {
         $data = [
             'type' => 'call_ended',
-            'callId' => $callId,
+            'call_id' => $callId,
         ];
         
-        return self::sendToTokens($fcmTokens, null, $data);
+        return self::sendToTokens($fcmTokens, $data);
     }
     
     /**
      * Отправка уведомлений на несколько токенов
      */
-    private static function sendToTokens($tokens, $notification = null, $data = null) {
+    private static function sendToTokens($tokens, $data) {
         if (empty($tokens)) {
+            error_log("[FCM] ⚠️ No tokens provided");
             return ['success' => false, 'error' => 'No tokens provided'];
         }
         
@@ -77,9 +75,11 @@ class FCMService {
             $tokens = [$tokens];
         }
         
+        error_log("[FCM] 📤 Отправка на " . count($tokens) . " токенов");
+        
         $results = [];
         foreach ($tokens as $token) {
-            $result = self::sendToToken($token, $notification, $data);
+            $result = self::sendToToken($token, $data);
             $results[] = $result;
         }
         
@@ -88,31 +88,21 @@ class FCMService {
     
     /**
      * Отправка уведомления на один токен
+     * ⭐ КРИТИЧНО: Используем ТОЛЬКО data payload (без notification)
      */
-    private static function sendToToken($token, $notification = null, $data = null) {
+    private static function sendToToken($token, $data) {
+        error_log("[FCM] ========================================");
+        error_log("[FCM] 📤 Отправка на токен: " . substr($token, 0, 30) . "...");
+        
+        // ⭐ КРИТИЧНО: Для Flutter используем ТОЛЬКО data payload
+        // БЕЗ поля notification!
         $payload = [
             'to' => $token,
             'priority' => 'high',
+            'data' => $data,  // ⭐ ТОЛЬКО data
         ];
         
-        if ($notification) {
-            $payload['notification'] = $notification;
-        }
-        
-        if ($data) {
-            $payload['data'] = $data;
-        }
-        
-        // Для web добавляем специфичные настройки
-        $payload['webpush'] = [
-            'headers' => [
-                'Urgency' => 'high'
-            ],
-            'notification' => $notification ?? [],
-            'fcm_options' => [
-                'link' => 'https://securewave.sbk-19.ru'
-            ]
-        ];
+        error_log("[FCM] Payload: " . json_encode($payload));
         
         $headers = [
             'Authorization: key=' . self::$serverKey,
@@ -131,7 +121,7 @@ class FCMService {
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         
         if (curl_errno($ch)) {
-            error_log('[FCM] Curl error: ' . curl_error($ch));
+            error_log('[FCM] ❌ Curl error: ' . curl_error($ch));
             curl_close($ch);
             return ['success' => false, 'error' => curl_error($ch)];
         }
@@ -140,10 +130,15 @@ class FCMService {
         
         $response = json_decode($result, true);
         
+        error_log("[FCM] HTTP Code: $httpCode");
+        error_log("[FCM] Response: " . json_encode($response));
+        error_log("[FCM] ========================================");
+        
         if ($httpCode === 200 && isset($response['success']) && $response['success'] === 1) {
+            error_log("[FCM] ✅ Уведомление отправлено успешно!");
             return ['success' => true, 'response' => $response];
         } else {
-            error_log('[FCM] Send failed: ' . $result);
+            error_log('[FCM] ❌ Send failed: ' . $result);
             return ['success' => false, 'error' => $result];
         }
     }

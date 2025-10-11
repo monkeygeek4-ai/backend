@@ -37,6 +37,9 @@ class PushNotificationService {
         return $this->sendToTokens($tokens, $notification, $data);
     }
     
+    /**
+     * ✅ ИСПРАВЛЕНО: Специальный формат для Android звонков
+     */
     public function sendIncomingCallNotification($userId, $callId, $callerName, $callType, $callerAvatar = null) {
         $tokens = $this->getUserTokens($userId);
         
@@ -47,21 +50,21 @@ class PushNotificationService {
         
         $isVideo = $callType === 'video';
         
-        $notification = array(
-            'title' => ($isVideo ? 'Видеозвонок' : 'Аудиозвонок') . ' от ' . $callerName,
-            'body' => 'Входящий ' . ($isVideo ? 'видеозвонок' : 'звонок')
-        );
-        
+        // ⭐ DATA-ONLY сообщение для Android (без notification payload)
         $data = array(
             'type' => 'incoming_call',
             'callId' => $callId,
             'callerName' => $callerName,
             'callType' => $callType,
             'callerAvatar' => $callerAvatar ? $callerAvatar : '',
-            'timestamp' => strval(time())
+            'timestamp' => strval(time()),
+            // Дополнительные данные для отображения
+            'title' => ($isVideo ? 'Видеозвонок' : 'Аудиозвонок') . ' от ' . $callerName,
+            'body' => 'Входящий ' . ($isVideo ? 'видеозвонок' : 'звонок')
         );
         
-        return $this->sendToTokens($tokens, $notification, $data, true);
+        // ⭐ Отправляем БЕЗ notification payload для Android
+        return $this->sendToTokens($tokens, null, $data, true);
     }
     
     public function sendCallEndedNotification($userId, $callId) {
@@ -78,6 +81,7 @@ class PushNotificationService {
             'timestamp' => strval(time())
         );
         
+        // БЕЗ notification payload
         return $this->sendToTokens($tokens, null, $data, true);
     }
     
@@ -96,6 +100,9 @@ class PushNotificationService {
         return $tokens;
     }
     
+    /**
+     * ✅ ИСПРАВЛЕНО: Правильная отправка через FCM v1 API
+     */
     private function sendToTokens($tokens, $notification = null, $data = null, $highPriority = false) {
         if (empty($tokens)) {
             return false;
@@ -106,34 +113,37 @@ class PushNotificationService {
         
         foreach ($tokens as $token) {
             try {
-                $notificationPayload = $notification ? $notification : array();
-                $dataPayload = $data ? $data : array();
-                
+                // Конвертируем все значения data в строки
                 $dataPayloadStr = array();
-                foreach ($dataPayload as $key => $value) {
-                    $dataPayloadStr[$key] = strval($value);
+                if ($data) {
+                    foreach ($data as $key => $value) {
+                        $dataPayloadStr[$key] = strval($value);
+                    }
                 }
                 
+                // ⭐ Если notification = null, отправляем только data
                 $result = $this->firebaseAdmin->sendNotification(
                     $token,
-                    $notificationPayload,
+                    $notification, // null для data-only сообщений
                     $dataPayloadStr
                 );
                 
                 if ($result) {
                     $success++;
+                    error_log("✅ FCM sent to token: " . substr($token, 0, 20) . "...");
                 } else {
                     $failure++;
+                    error_log("❌ FCM failed for token: " . substr($token, 0, 20) . "...");
                     $this->removeInvalidToken($token);
                 }
             } catch (Exception $e) {
-                error_log("FCM Error for token " . $token . ": " . $e->getMessage());
+                error_log("❌ FCM Exception for token " . substr($token, 0, 20) . "...: " . $e->getMessage());
                 $failure++;
                 $this->removeInvalidToken($token);
             }
         }
         
-        error_log("FCM Results: " . $success . " sent, " . $failure . " failed");
+        error_log("📊 FCM Results: {$success} sent, {$failure} failed");
         
         return $success > 0;
     }
@@ -144,9 +154,9 @@ class PushNotificationService {
                 "DELETE FROM fcm_tokens WHERE token = :token",
                 array('token' => $token)
             );
-            error_log("Removed invalid FCM token: " . $token);
+            error_log("🗑️ Removed invalid FCM token: " . substr($token, 0, 20) . "...");
         } catch (Exception $e) {
-            error_log("Error removing invalid token: " . $e->getMessage());
+            error_log("⚠️ Error removing invalid token: " . $e->getMessage());
         }
     }
     

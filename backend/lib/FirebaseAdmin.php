@@ -55,8 +55,6 @@ class FirebaseAdmin {
         // Подписываем JWT
         $privateKey = openssl_pkey_get_private($serviceAccount['private_key']);
         openssl_sign($signatureInput, $signature, $privateKey, OPENSSL_ALGO_SHA256);
-        // ⭐ ИСПРАВЛЕНО: Убрана deprecated функция openssl_free_key()
-        // В PHP 8.0+ ресурсы освобождаются автоматически
         
         $base64UrlSignature = $this->base64UrlEncode($signature);
         $jwt = $signatureInput . '.' . $base64UrlSignature;
@@ -75,6 +73,7 @@ class FirebaseAdmin {
         curl_close($ch);
         
         if ($httpCode !== 200) {
+            error_log("❌ Failed to get FCM access token: HTTP $httpCode - $response");
             throw new Exception("Failed to get access token: " . $response);
         }
         
@@ -82,50 +81,78 @@ class FirebaseAdmin {
         $this->accessToken = $tokenData['access_token'];
         $this->tokenExpiry = time() + ($tokenData['expires_in'] - 300); // 5 минут запаса
         
+        error_log("✅ FCM access token obtained successfully");
+        
         return $this->accessToken;
     }
     
     /**
-     * Отправка уведомления через FCM v1 API
+     * ✅ ИСПРАВЛЕНО: Отправка уведомления через FCM v1 API
+     * Поддержка data-only сообщений (без notification payload)
      */
-    public function sendNotification($token, $notification, $data = []) {
-        $accessToken = $this->getAccessToken();
-        
-        $message = [
-            'token' => $token,
-            'notification' => $notification,
-            'data' => $data,
-            'android' => [
-                'priority' => 'high'
-            ],
-            'apns' => [
-                'headers' => [
-                    'apns-priority' => '10'
+    public function sendNotification($token, $notification = null, $data = []) {
+        try {
+            $accessToken = $this->getAccessToken();
+            
+            // Строим message
+            $message = [
+                'token' => $token,
+                'android' => [
+                    'priority' => 'high',
+                    'notification' => [
+                        'channel_id' => 'calls_channel', // ⭐ Важно для звонков
+                        'sound' => 'default',
+                        'priority' => 'max',
+                        'visibility' => 'public'
+                    ]
                 ]
-            ]
-        ];
-        
-        $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
-        
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Authorization: Bearer ' . $accessToken,
-            'Content-Type: application/json'
-        ]);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(['message' => $message]));
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode !== 200) {
-            error_log("FCM Error: HTTP $httpCode - $response");
+            ];
+            
+            // ⭐ Добавляем notification только если он передан
+            if ($notification !== null && !empty($notification)) {
+                $message['notification'] = $notification;
+            }
+            
+            // ⭐ Добавляем data payload
+            if (!empty($data)) {
+                $message['data'] = $data;
+            }
+            
+            $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
+            
+            $payload = json_encode(['message' => $message]);
+            
+            error_log("📤 Sending FCM request:");
+            error_log("  URL: $url");
+            error_log("  Payload: " . $payload);
+            
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Authorization: Bearer ' . $accessToken,
+                'Content-Type: application/json'
+            ]);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            error_log("📥 FCM Response: HTTP $httpCode");
+            error_log("  Response body: $response");
+            
+            if ($httpCode === 200) {
+                error_log("✅ FCM notification sent successfully");
+                return true;
+            } else {
+                error_log("❌ FCM Error: HTTP $httpCode - $response");
+                return false;
+            }
+        } catch (Exception $e) {
+            error_log("❌ FCM Exception: " . $e->getMessage());
             return false;
         }
-        
-        return true;
     }
     
     /**
