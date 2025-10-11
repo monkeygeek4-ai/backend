@@ -101,7 +101,8 @@ class PushNotificationService {
     }
     
     /**
-     * ✅ ИСПРАВЛЕНО: Правильная отправка через FCM v1 API
+     * ✅ ИСПРАВЛЕНО: НЕ удаляем токен при обычных ошибках!
+     * Удаляем только при явных ошибках типа "invalid registration token"
      */
     private function sendToTokens($tokens, $notification = null, $data = null, $highPriority = false) {
         if (empty($tokens)) {
@@ -134,12 +135,23 @@ class PushNotificationService {
                 } else {
                     $failure++;
                     error_log("❌ FCM failed for token: " . substr($token, 0, 20) . "...");
-                    $this->removeInvalidToken($token);
+                    // ⭐ НЕ УДАЛЯЕМ ТОКЕН! Просто логируем ошибку
+                    error_log("⚠️ Ошибка отправки, но токен сохраняем для повторных попыток");
                 }
             } catch (Exception $e) {
                 error_log("❌ FCM Exception for token " . substr($token, 0, 20) . "...: " . $e->getMessage());
                 $failure++;
-                $this->removeInvalidToken($token);
+                
+                // ⭐ УДАЛЯЕМ ТОЛЬКО если явная ошибка "invalid token"
+                $errorMessage = strtolower($e->getMessage());
+                if (strpos($errorMessage, 'invalid') !== false || 
+                    strpos($errorMessage, 'not found') !== false ||
+                    strpos($errorMessage, 'unregistered') !== false) {
+                    error_log("⚠️ Токен невалиден, удаляем: " . substr($token, 0, 20));
+                    $this->removeInvalidToken($token);
+                } else {
+                    error_log("⚠️ Временная ошибка, токен сохраняем");
+                }
             }
         }
         

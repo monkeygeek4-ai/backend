@@ -87,44 +87,81 @@ class FirebaseAdmin {
     }
     
     /**
-     * ✅ ИСПРАВЛЕНО: Отправка уведомления через FCM v1 API
-     * Поддержка data-only сообщений (без notification payload)
+     * ✅✅✅ ИСПРАВЛЕНО: Правильная отправка через FCM v1 API
+     * БЕЗ недопустимых полей в android.notification
      */
     public function sendNotification($token, $notification = null, $data = []) {
         try {
-            $accessToken = $this->getAccessToken();
-            
-            // Строим message
-            $message = [
-                'token' => $token,
-                'android' => [
-                    'priority' => 'high',
-                    'notification' => [
-                        'channel_id' => 'calls_channel', // ⭐ Важно для звонков
-                        'sound' => 'default',
-                        'priority' => 'max',
-                        'visibility' => 'public'
-                    ]
-                ]
-            ];
-            
-            // ⭐ Добавляем notification только если он передан
-            if ($notification !== null && !empty($notification)) {
-                $message['notification'] = $notification;
+            error_log("========================================");
+            error_log("📤 FCM sendNotification called");
+            error_log("  Token: " . substr($token, 0, 30) . "...");
+            error_log("  Has notification: " . ($notification ? "YES" : "NO"));
+            error_log("  Has data: " . (empty($data) ? "NO" : "YES"));
+            if (!empty($data)) {
+                error_log("  Data type: " . ($data['type'] ?? 'unknown'));
             }
             
-            // ⭐ Добавляем data payload
-            if (!empty($data)) {
+            $accessToken = $this->getAccessToken();
+            
+            // ⭐⭐⭐ КРИТИЧНО: Правильная структура сообщения
+            $message = [
+                'token' => $token,
+            ];
+            
+            // ВАРИАНТ 1: Data-only сообщение (для foreground звонков)
+            if ($notification === null && !empty($data)) {
+                error_log("📦 Building DATA-ONLY message (for foreground)");
+                
+                $message['android'] = [
+                    'priority' => 'high',
+                    // ⭐ БЕЗ android.notification для data-only!
+                ];
+                
+                $message['data'] = $data;
+                
+                error_log("✅ Data-only message structure ready");
+            }
+            // ВАРИАНТ 2: Notification + data (для background/terminated)
+            else if ($notification !== null) {
+                error_log("📢 Building NOTIFICATION message (for background)");
+                
+                $message['notification'] = $notification;
+                
+                // ⭐⭐⭐ ИСПРАВЛЕНО: Убраны недопустимые поля
+                $message['android'] = [
+                    'priority' => 'high',
+                    'notification' => [
+                        'channel_id' => 'calls_channel',
+                        'sound' => 'default',
+                        // ❌ УДАЛЕНО: 'priority' - нет такого поля!
+                        // ❌ УДАЛЕНО: 'visibility' - нет такого поля!
+                    ]
+                ];
+                
+                if (!empty($data)) {
+                    $message['data'] = $data;
+                }
+                
+                error_log("✅ Notification message structure ready");
+            }
+            // ВАРИАНТ 3: Только data (fallback)
+            else {
+                error_log("⚠️ Building empty message (fallback)");
                 $message['data'] = $data;
             }
             
             $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
             
-            $payload = json_encode(['message' => $message]);
+            $payload = json_encode(['message' => $message], JSON_PRETTY_PRINT);
             
-            error_log("📤 Sending FCM request:");
+            error_log("========================================");
+            error_log("📤 SENDING FCM REQUEST:");
             error_log("  URL: $url");
-            error_log("  Payload: " . $payload);
+            error_log("  Project ID: {$this->projectId}");
+            error_log("========================================");
+            error_log("📦 PAYLOAD:");
+            error_log($payload);
+            error_log("========================================");
             
             $ch = curl_init($url);
             curl_setopt($ch, CURLOPT_POST, true);
@@ -137,20 +174,48 @@ class FirebaseAdmin {
             
             $response = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
             curl_close($ch);
             
-            error_log("📥 FCM Response: HTTP $httpCode");
+            error_log("========================================");
+            error_log("📥 FCM RESPONSE:");
+            error_log("  HTTP Code: $httpCode");
+            if ($curlError) {
+                error_log("  CURL Error: $curlError");
+            }
             error_log("  Response body: $response");
+            error_log("========================================");
             
             if ($httpCode === 200) {
-                error_log("✅ FCM notification sent successfully");
+                error_log("✅✅✅ FCM NOTIFICATION SENT SUCCESSFULLY!");
+                error_log("========================================");
                 return true;
             } else {
-                error_log("❌ FCM Error: HTTP $httpCode - $response");
+                error_log("❌❌❌ FCM ERROR!");
+                error_log("  HTTP Code: $httpCode");
+                error_log("  Response: $response");
+                error_log("========================================");
+                
+                // Парсим ошибку для детального логирования
+                $errorData = json_decode($response, true);
+                if ($errorData && isset($errorData['error'])) {
+                    error_log("  Error code: " . ($errorData['error']['code'] ?? 'unknown'));
+                    error_log("  Error message: " . ($errorData['error']['message'] ?? 'unknown'));
+                    if (isset($errorData['error']['details'])) {
+                        error_log("  Error details: " . json_encode($errorData['error']['details']));
+                    }
+                }
+                
                 return false;
             }
         } catch (Exception $e) {
-            error_log("❌ FCM Exception: " . $e->getMessage());
+            error_log("========================================");
+            error_log("❌❌❌ FCM EXCEPTION!");
+            error_log("  Message: " . $e->getMessage());
+            error_log("  File: " . $e->getFile());
+            error_log("  Line: " . $e->getLine());
+            error_log("  Trace: " . $e->getTraceAsString());
+            error_log("========================================");
             return false;
         }
     }
@@ -160,8 +225,14 @@ class FirebaseAdmin {
      */
     public function sendMulticast($tokens, $notification, $data = []) {
         if (empty($tokens)) {
+            error_log("⚠️ sendMulticast: no tokens provided");
             return ['success' => 0, 'failure' => 0];
         }
+        
+        error_log("========================================");
+        error_log("📤 FCM sendMulticast");
+        error_log("  Tokens count: " . count($tokens));
+        error_log("========================================");
         
         $success = 0;
         $failure = 0;
@@ -173,6 +244,12 @@ class FirebaseAdmin {
                 $failure++;
             }
         }
+        
+        error_log("========================================");
+        error_log("📊 FCM Multicast Results:");
+        error_log("  Success: $success");
+        error_log("  Failure: $failure");
+        error_log("========================================");
         
         return [
             'success' => $success,
